@@ -119,16 +119,20 @@ async function getDataByCategory(categoryCodes) {
         document.getElementById('dateDisplay').textContent = getHumanReadableDate(urlDate);
     }
 
-    // Retrieve the last request time and stored data from localStorage
-    const lastRequestTime = localStorage.getItem('lastRequestTime');
-    const storedPollenData = JSON.parse(localStorage.getItem('pollenData'));
+    // Create date-specific cache keys
+    const cacheKey = `pollenData_${urlDate}`;
+    const timeKey = `lastRequestTime_${urlDate}`;
+    
+    // Retrieve the last request time and stored data from localStorage for this specific date
+    const lastRequestTime = localStorage.getItem(timeKey);
+    const storedPollenData = JSON.parse(localStorage.getItem(cacheKey));
 
     // Check if data exists and the request was made within the last hour, but skip if noCache is true
     const oneHourInMilliseconds = 60 * 60 * 1000;
     const currentTime = new Date().getTime();
 
     if (!noCache && lastRequestTime && storedPollenData && currentTime - lastRequestTime < oneHourInMilliseconds) {
-        console.log('Using cached data');
+        console.log(`Using cached data for ${urlDate}`);
         return storedPollenData; // Return cached data
     } else {
         console.log('Fetching new data from API');
@@ -153,11 +157,12 @@ async function getDataByCategory(categoryCodes) {
             categories: categoryCodes.map((code) => {
                 return data.Categories.find((category) => category.CategoryCode === code);
             }),
+            allCategories: data.Categories // Store all categories for peak misery analysis
         };
 
-        // Save to localStorage
-        localStorage.setItem('pollenData', JSON.stringify(responseData));
-        localStorage.setItem('lastRequestTime', currentTime);
+        // Save to localStorage with date-specific keys
+        localStorage.setItem(cacheKey, JSON.stringify(responseData));
+        localStorage.setItem(timeKey, currentTime);
 
         return responseData; // Return the fetched data
     }
@@ -241,7 +246,7 @@ function displayGaugesForCategories(categoriesData, moments) {
         canvasContainer.appendChild(canvas);
         console.log({ displayTime });
         if (displayTime !== '0') canvasContainer.appendChild(timeLabel);
-        // canvasContainer.appendChild(ppmLabel);
+        canvasContainer.appendChild(ppmLabel);
 
         // Append the container div to the gaugeContainer
         gaugeContainer.appendChild(canvasContainer);
@@ -258,18 +263,217 @@ function displayGaugesForCategories(categoriesData, moments) {
 }
 
 /**
+ * Analyzes all categories to find the top N peak misery times across the entire day.
+ * @param {Array} allCategories - Complete array of all categories from API response
+ * @param {Array} moments - Array of timestamps corresponding to data points
+ * @param {number} topCount - Number of top results to return (default: 3)
+ * @returns {Array} Top N peak misery entries sorted by misery level (highest first)
+ */
+function getTopPeakMiseryTimes(allCategories, moments, topCount = 3) {
+    const peakMiseryEntries = [];
+    
+    // Process each category to find its peak misery value and time
+    allCategories.forEach(categoryData => {
+        if (!categoryData || !categoryData.Misery) return;
+        
+        let peakMisery = -1;
+        let peakMiseryIndex = -1;
+        
+        // Find the highest misery value for this category
+        categoryData.Misery.forEach((miseryValue, index) => {
+            if (miseryValue !== null && miseryValue > peakMisery) {
+                peakMisery = miseryValue;
+                peakMiseryIndex = index;
+            }
+        });
+        
+        // If we found a valid peak misery value, record it
+        if (peakMiseryIndex !== -1 && peakMisery > 0) {
+            peakMiseryEntries.push({
+                categoryCode: categoryData.CategoryCode,
+                categoryDescription: categoryData.CategoryDescription,
+                categoryCommonName: categoryData.CategoryCommonName || '',
+                peakMisery: peakMisery,
+                peakMiseryPercent: (peakMisery * 100).toFixed(2),
+                peakTime: moments[peakMiseryIndex],
+                ppmAtPeak: categoryData.PPM3[peakMiseryIndex]
+            });
+        }
+    });
+    
+    // Sort by peak misery level (highest first) and return top N
+    return peakMiseryEntries
+        .sort((a, b) => b.peakMisery - a.peakMisery)
+        .slice(0, topCount);
+}
+
+/**
+ * Formats a UTC timestamp to human-readable 12-hour format
+ * @param {string} utcTimestamp - UTC timestamp (e.g., "2025-10-08T15:00:00Z")
+ * @returns {string} Formatted time (e.g., "3:00 PM")
+ */
+function formatTimeDisplay(utcTimestamp) {
+    const time = utcTimestamp.split('T')[1].split(':').slice(0, 2).join(':'); // Extract HH:MM
+    let [hour, minute] = time.split(':');
+    hour = parseInt(hour, 10);
+    
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    hour = hour % 12 || 12;
+    
+    return `${hour}:${minute} ${ampm}`;
+}
+
+/**
+ * Displays gauges for top peak misery categories showing their peak values and times
+ * @param {Array} topPeakTimes - Array of top N peak misery entries
+ * @param {Array} moments - Array of timestamps
+ */
+function displayPeakMiseryGauges(topPeakTimes, moments) {
+    const gaugeContainer = document.getElementById('gaugeContainer');
+    const interval = getUrlParameter('interval');
+    const displayTime = getUrlParameter('time');
+    
+    if (!gaugeContainer) return;
+    
+    gaugeContainer.innerHTML = ''; // Clear any existing gauges
+    
+    topPeakTimes.forEach((peakData, index) => {
+        const displayName = peakData.categoryCommonName || peakData.categoryDescription;
+        
+        // Create a container div for each gauge
+        const canvasContainer = document.createElement('div');
+        canvasContainer.classList.add('canvas-container');
+        
+        // Create the category description label
+        const categoryLabel = document.createElement('div');
+        categoryLabel.classList.add('gauge-category-label');
+        categoryLabel.textContent = displayName || 'Unknown Category';
+        
+        // Create the time label showing when peak occurred
+        const timeLabel = document.createElement('div');
+        timeLabel.classList.add('gauge-time-label');
+        
+        // Display peak time in 12-hour format with AM/PM
+        const time = peakData.peakTime.split('T')[1].split(':').slice(0, 2).join(':');
+        let [hour, minute] = time.split(':');
+        hour = parseInt(hour, 10);
+        
+        const ampm = hour >= 12 ? 'PM' : 'AM';
+        hour = hour % 12 || 12;
+        
+        timeLabel.textContent = interval == 'day' ? `` : `Peak at ${hour}:${minute} ${ampm}`;
+        
+        // Create the canvas element for the gauge
+        const canvas = document.createElement('canvas');
+        canvas.id = `gaugeCanvas${index + 1}`;
+        canvas.width = 300;
+        canvas.height = 180;
+        
+        // Create the PPM label showing peak values
+        const ppmLabel = document.createElement('div');
+        ppmLabel.classList.add('gauge-ppm-label');
+        ppmLabel.textContent = `PPM: ${peakData.ppmAtPeak?.toFixed(2) || 'N/A'} | Peak Misery: ${peakData.peakMiseryPercent}%`;
+        
+        // Append elements to container
+        canvasContainer.appendChild(categoryLabel);
+        canvasContainer.appendChild(canvas);
+        if (displayTime !== '0') canvasContainer.appendChild(timeLabel);
+        canvasContainer.appendChild(ppmLabel);
+        
+        // Append container to gauge container
+        gaugeContainer.appendChild(canvasContainer);
+        
+        // Create the gauge showing peak misery value
+        const opts = gaugeOptions;
+        const gauge = new Gauge(canvas).setOptions(opts);
+        
+        gauge.maxValue = 100;
+        gauge.setMinValue(0);
+        gauge.animationSpeed = 32;
+        gauge.set(parseFloat(peakData.peakMiseryPercent)); // Set peak misery as gauge value
+    });
+}
+
+/**
+ * Displays the top N peak misery times in place of the gauge container
+ * @param {Array} topPeakTimes - Array of top N peak misery entries
+ */
+function displayTopPeakMiseryTimes(topPeakTimes) {
+    // Replace the gauge container content with peak misery data
+    const gaugeContainer = document.getElementById('gaugeContainer');
+    if (!gaugeContainer) return;
+    
+    // Build HTML content using existing gauge container styling
+    let htmlContent = '';
+    
+    if (topPeakTimes.length === 0) {
+        htmlContent = `
+            <div class="canvas-container">
+                <div class="gauge-category-label">No Peak Misery Data</div>
+                <p>No significant misery data available for today.</p>
+            </div>
+        `;
+    } else {
+        // Create a "gauge" for each of the top N peak misery times
+        topPeakTimes.forEach((entry, index) => {
+            const displayName = entry.categoryCommonName || entry.categoryDescription;
+            const timeFormatted = formatTimeDisplay(entry.peakTime);
+            
+            htmlContent += `
+                <div class="canvas-container">
+                    <div class="gauge-category-label">#${index + 1} Peak Misery</div>
+                    <div class="category-label">${displayName}</div>
+                    <div class="gauge-time-label">${timeFormatted}</div>
+                    <div class="gauge-ppm-label">Misery: ${entry.peakMiseryPercent}% | PPM: ${entry.ppmAtPeak?.toFixed(2) || 'N/A'}</div>
+                </div>
+            `;
+        });
+    }
+    
+    gaugeContainer.innerHTML = htmlContent;
+}
+
+/**
  * Initializes the page by fetching data based on CategoryCode and displaying the gauges.
  */
 async function init() {
-    // Get the category codes from the URL
-    const categoryCodesParam = getUrlParameter('categoryCodes');
-    const categoryCodes = categoryCodesParam ? categoryCodesParam.split(',') : ['POL'];
+    // Show loading state
+    const gaugeContainer = document.getElementById('gaugeContainer');
+    if (gaugeContainer) {
+        gaugeContainer.innerHTML = '<div class="canvas-container"><div class="gauge-category-label">Loading...</div></div>';
+    }
+    
+    try {
+        // Get the category codes from the URL (for backward compatibility, but not used)
+        const categoryCodesParam = getUrlParameter('categoryCodes');
+        const categoryCodes = categoryCodesParam ? categoryCodesParam.split(',') : ['POL'];
+        
+        // Get the count from URL parameter (default: 3)
+        const countParam = getUrlParameter('count');
+        const topCount = countParam ? parseInt(countParam, 10) : 3;
 
-    // Fetch data for the given category codes
-    const { moments, categories } = await getDataByCategory(categoryCodes);
+        // Fetch data for all categories
+        const { moments, categories, allCategories } = await getDataByCategory(categoryCodes);
 
-    // Display gauges for each category
-    displayGaugesForCategories(categories, moments);
+        if (allCategories && allCategories.length > 0) {
+            // Get top peak misery categories with their peak data
+            const topPeakTimes = getTopPeakMiseryTimes(allCategories, moments, topCount);
+            
+            // Display gauges showing peak misery data instead of latest data
+            displayPeakMiseryGauges(topPeakTimes, moments);
+        } else {
+            // Show no data message
+            if (gaugeContainer) {
+                gaugeContainer.innerHTML = '<div class="canvas-container"><div class="gauge-category-label">No Data Available</div></div>';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading pollen data:', error);
+        // Show error message
+        if (gaugeContainer) {
+            gaugeContainer.innerHTML = '<div class="canvas-container"><div class="gauge-category-label">Error Loading Data</div></div>';
+        }
+    }
 }
 
 // Initialize the page when loaded
