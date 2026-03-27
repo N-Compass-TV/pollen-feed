@@ -152,12 +152,61 @@ async function getDataByCategory(categoryCodes) {
         const data = await response.json();
 
         // Cache the fetched data and request time in localStorage
+        let allCategories = [];
+
+        // Handle new API response structure vs old structure
+        if (data.Layers && data.Layers[0] && data.Layers[0].Counts && !Array.isArray(data.Categories)) {
+            const countsMap = data.Layers[0].Counts;
+            const cubicMeters = data.CubicMeters || [];
+            
+            allCategories = Object.keys(data.Categories).map(code => {
+                const catInfo = data.Categories[code];
+                const counts = countsMap[code] || [];
+                
+                const ppm3Array = counts.map((count, index) => {
+                    if (count === null) return null;
+                    const cm = cubicMeters[index];
+                    return (cm && cm > 0) ? (count / cm) : 0;
+                });
+                
+                const miseryArray = ppm3Array.map(ppm3 => {
+                    if (ppm3 === null) return null;
+                    if (ppm3 === 0) return 0;
+                    
+                    if (catInfo.Power !== null && catInfo.Factor !== null) {
+                        // Check if it's a logarithmic scale (Mold and Particulates)
+                        if (['MOL', 'OTHPAR', 'PAR'].includes(catInfo.GroupCode)) {
+                            // Misery = ln(PPM3 / Power) / ln(Factor)
+                            const val = Math.log(ppm3 / catInfo.Power) / Math.log(catInfo.Factor);
+                            return Math.max(0, Math.min(val, 1.0)); // Cap between 0 and 1
+                        } else {
+                            // Power scale (Pollens: TRE, GRA, WEE, POL, etc)
+                            // Misery = (PPM3 / Factor) ^ (1 / Power)
+                            const val = Math.pow(ppm3 / catInfo.Factor, 1 / catInfo.Power);
+                            return Math.max(0, Math.min(val, 1.0));
+                        }
+                    }
+                    return null; // For categories with no Power/Factor
+                });
+
+                return {
+                    CategoryCode: code,
+                    CategoryDescription: catInfo.Description,
+                    CategoryCommonName: catInfo.CommonName,
+                    PPM3: ppm3Array,
+                    Misery: miseryArray
+                };
+            });
+        } else if (Array.isArray(data.Categories)) {
+            allCategories = data.Categories;
+        }
+
         const responseData = {
             moments: data.Moments,
             categories: categoryCodes.map((code) => {
-                return data.Categories.find((category) => category.CategoryCode === code);
+                return allCategories.find((category) => category.CategoryCode === code);
             }),
-            allCategories: data.Categories // Store all categories for peak misery analysis
+            allCategories: allCategories // Store all categories for peak misery analysis
         };
 
         // Save to localStorage with date-specific keys
@@ -455,7 +504,10 @@ async function init() {
         // Fetch data for all categories
         const { moments, categories, allCategories } = await getDataByCategory(categoryCodes);
 
-        if (allCategories && allCategories.length > 0) {
+        if (categoryCodesParam && categories && categories.length > 0) {
+            // If specific categories are requested, display their current levels
+            displayGaugesForCategories(categories, moments);
+        } else if (allCategories && allCategories.length > 0) {
             // Get top peak misery categories with their peak data
             const topPeakTimes = getTopPeakMiseryTimes(allCategories, moments, topCount);
             
