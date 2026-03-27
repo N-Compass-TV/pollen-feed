@@ -50,8 +50,8 @@ const gaugeOptions = {
 
 /** API Configuration */
 const apiConfig = {
-    apiUrl: 'https://sensors.pollensense.com/api/sites/379ec159-ac99-43bf-9d2d-a2371638b942/metrics',
-    apiKey: 'm0sncI7JMb8jLj4prR6ZojN08wadP2sxAV4ZIx9DCyKJhxtf6HjEARwOqZkhh1MSBXAfzXSW9oarlh84Ao9sCye',
+    apiUrl: 'https://sensors.pollensense.com/api/v2/sites/1F42FA64-F647-4B4D-A976-076FAE469339/metrics',
+    apiKey: 'QEF8v5gAUW7jXkLep6dvnfJm2WzgmgxMDz2ZYdQeBSNanPzpiPp9UaldwhsCq1PpsPiF65ECHxU6FCosSB3xWe',
     defaultInterval: 'hour', // Can be changed to 'day' or 'hour'
 };
 
